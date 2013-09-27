@@ -1,99 +1,220 @@
-var async = require('async');
-var fs = require('fs');
 var JSDocParser = require('jsdoc-parser');
-
-var Tokenizer = require('tokenizer');
 
 
 var Compiler = function () {
-
+  this.open_commands_ = null;
+  this.provides_ = null;
 };
 
 
-Compiler.prototype.compile = function (filenames) {
-  var compiler = this;
+Compiler.prototype.compileTokens = function (tokens) {
+  this.open_commands_ = [];
+  this.provides_ = [];
 
-  filenames.forEach(function (filename) {
-    var source = fs.readFileSync(filename, 'utf8');
-    var tokens = compiler.tokenize(source);
-    tokens = compiler.filterTokens_(tokens);
-    console.log(tokens);
-  });
-};
+  var code_chunks = tokens.map(function (token) {
+    var indentation_level = this.open_commands_.length;
+    var indentation = '';
+    for (var i = 0; i < indentation_level; ++i) {
+      indentation += '  ';
+    }
 
-
-Compiler.prototype.tokenize = function (source, callback) {
-  var tokens = [];
-
-  var in_jsdoc = false;
-  var in_command = false;
-
-  var buf = '';
-  while (source.length !== 0) {
-    var character = source[0];
-    buf += character;
-    source = source.substr(1);
-
-    switch (character) {
-    case '{':
-      if (!in_command && !in_jsdoc) {
-        if (buf.length > 1) {
-          tokens.push({ source: buf.substr(0, buf.length - 1), type: 'code' });
-          buf = buf.substr(buf.length - 1);
-        }
-        in_command = true;
-      }
+    var output = '';
+    switch (token.type) {
+    case 'jsdoc':
+      output = this.compileJSDocToken_(token);
       break;
-    case '}':
-      if (in_command) {
-        tokens.push({ source: buf, type: 'command' });
-        in_command = false;
-        buf = '';
-      }
+
+    case 'command':
+      output = this.compileCommandToken_(token);
       break;
+
+    case 'code':
+      output = this.compileCodeToken(token);
+      break;
+
+    default:
+      throw new Error('Unknown token type: ' + token.type);
     }
 
-    if (in_jsdoc && buf.substr(buf.length - 2) === '*/') {
-      tokens.push({ source: buf, type: 'jsdoc' });
-      in_jsdoc = false;
-      buf = '';
+    if (output === null) {
+      return '';
     }
 
-    if (buf.substr(buf.length - 3) === '/**') {
-      if (!in_jsdoc) {
-        if (buf.length > 3) {
-          tokens.push({ source: buf.substr(0, buf.length - 3), type: 'code' });
-          buf = buf.substr(buf.length - 3);
-        }
-        in_jsdoc = true;
+    if (this.open_commands_.length < indentation_level) {
+      indentation_level = this.open_commands_.length;
+      indentation = '';
+      for (var i = 0; i < indentation_level; ++i) {
+        indentation += '  ';
       }
     }
-  }
 
-  return tokens;
-};
-
-
-Compiler.prototype.filterTokens_ = function (tokens) {
-  tokens.forEach(function (token) {
-    if (token.type === 'code') {
-      token.source = token.source.replace(/\s+\n+\s+|\n+\s+|\s+\n+/g, '');
-      token.source = token.source.replace(/\s+/g, ' ');
-    }
-    token.source = token.source.replace(/^\n+|\n+$/g, '');
-  });
-
-  tokens = tokens.filter(function (token) {
-    return (token.source.length !== 0);
-  });
+    return indentation + output + '\n';
+  }, this);
 
   var result = '';
-  tokens.forEach(function (token) {
-    result += token.source;
-  });
-  console.log(result);
+  if (this.provides_.length !== 0) {
+    result = this.provides_.map(function (symbol) {
+      return 'goog.provide("' + symbol + '");';
+    }).join('\n') + '\n\n';
+  }
+  result += 'goog.require("goog.array");\n\n';
+  result += code_chunks.join('');
+  return result;
+};
 
-  return tokens;
+
+Compiler.prototype.compileJSDocToken_ = function (token) {
+  if (this.open_commands_.length !== 0) {
+    throw new Error('Unexpected jsdoc: ' + token.source);
+  }
+
+  var comment_content = token.source.substr(2, token.source.length - 4);
+  var template_jsdoc = JSDocParser.parse(comment_content);
+  var jsdoc = '/**';
+  if (template_jsdoc.description) {
+    jsdoc += '\n * ' + template_jsdoc.description.replace(/\n/g, '\n * ');
+  }
+
+  jsdoc += '\n * @param {{ '
+  var template_annotations = template_jsdoc.annotations;
+  if (template_annotations['params']) {
+    jsdoc += template_annotations['params'].map(function (param) {
+      return param.name + ': ' + param.type.substr(1, param.type.length - 2);
+    }).join(', ');
+  }
+  jsdoc += ' }} data Data to map to template variables.';
+
+  jsdoc += '\n * @param {!Object.<string, function(string): string} ' +
+      '_helpers Helper functions.'
+
+  jsdoc += '\n * @return {string} Template rendering.'
+
+  return jsdoc + '\n */';
+};
+
+
+Compiler.prototype.compileCommandToken_ = function (token) {
+  var closing = (token.source[1] === '/');
+  var match = token.source.substr(closing ? 2 : 1).match(/^[a-zA-Z]\w*/);
+  var command = match ? match[0] : null;
+  var prefix_length = (closing ? 2 : 1) + (command ? command.length : 0);
+
+  command = command || 'print';
+
+  if (!closing) { // command start
+    // "{" + command + "\s"
+    var exp = token.source.substr(prefix_length + 1)
+      .trimLeft()
+      .replace(/\}$/, '') || null;
+    return this.compileCommandStart_(command, exp);
+
+  } else { // command end
+    // "{/" + command + "}"
+    if (token.source.length > prefix_length + 1) {
+      throw new Error(
+          'Syntax Error: Closing commands do not accept expressions');
+    }
+
+    var last_open_command = this.open_commands_[0];
+    if (command !== last_open_command) {
+      throw new Error(
+          'Syntax Error: Unexpected closing command "' + command + '", ' +
+          '"' + last_open_command + '" has not been closed');
+    }
+
+    return this.compileCommandEnd_(command);
+  }
+};
+
+
+Compiler.prototype.compileCommandStart_ = function (command, exp) {
+  var output;
+  var block_command = false;
+
+  switch (command) {
+  case 'foreach':
+    var exp_parts = exp.split(/\s+/);
+    if (exp_parts[0][0] !== '$') {
+      throw new Error(
+          'Syntax Error: {foreach} command expecting a variable name ' +
+          'but got "' + exp_parts[0] + '"');
+    }
+    if (exp_parts[1] !== 'in') {
+      throw new Error(
+          'SyntaxError: Unexpected token "' + exp_parts[1] + '" in {foreach}');
+    }
+    if (exp_parts[2][0] !== '$') {
+      throw new Error(
+          'Syntax Error: {foreach} command expecting a variable name ' +
+          'but got "' + exp_parts[2] + '"');
+    }
+    output = 'goog.array.forEach(' +
+        exp_parts[1].substr(1) + ', ' +
+        'function (' + exp_parts[0].substr(1) + ', index) {';
+    block_command = true;
+    break;
+
+  case 'if':
+    exp = exp.replace(/$([a-zA-Z]\w*)/g, 'data.$1');
+    output = 'if (' + exp + ') {';
+    block_command = true;
+    break;
+
+  case 'else':
+    if (exp) {
+      throw new Error('SyntaxError: {else} does not accept expressions.');
+    }
+    output = '} else {';
+    break;
+
+  case 'print':
+    exp = exp.replace(/$([a-zA-Z]\w*)/g, 'data.$1');
+    output = 'if (' + exp + ') {';
+    break;
+
+  case 'template':
+    output = exp + ' = function (data, _helpers) { var rendering = "";';
+    block_command = true;
+    this.provides_.push(exp);
+    break;
+  }
+
+  if (block_command) {
+    this.open_commands_.unshift(command);
+  }
+
+  return output;
+};
+
+
+Compiler.prototype.compileCommandEnd_ = function (command) {
+  var output;
+
+  switch (command) {
+  case 'foreach':
+    output = '});';
+    break;
+  case 'if':
+    output = '}';
+    break;
+  case 'template':
+    output = '};';
+    break;
+  default:
+    throw new Error(
+        'Syntax Error: Unexpected closing command "' + command + '"');
+  }
+
+  this.open_commands_.shift();
+  return output;
+};
+
+Compiler.prototype.compileCodeToken = function (token) {
+  if (this.open_commands_.length === 0 && /^\s*$/.test(token.source)) {
+    return null;
+  }
+
+  return 'rendering += "' + token.source.replace(/"/g, '\\"') + '";';
 };
 
 
