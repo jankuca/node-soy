@@ -1,0 +1,10 @@
+{
+  "name": "node-soy",
+  "version": "0.0.0",
+
+  "dependencies": {
+    "async": "*",
+    "jsdoc-parser": "*",
+    "tokenizer": "*"
+  }
+}
