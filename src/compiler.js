@@ -4,12 +4,14 @@ var JSDocParser = require('jsdoc-parser');
 var Compiler = function () {
   this.open_commands_ = null;
   this.provides_ = null;
+  this.scopes_ = null;
 };
 
 
 Compiler.prototype.compileTokens = function (tokens) {
   this.open_commands_ = [];
   this.provides_ = [];
+  this.scopes_ = [];
 
   var code_chunks = tokens.map(function (token) {
     var indentation_level = this.open_commands_.length;
@@ -84,7 +86,7 @@ Compiler.prototype.compileJSDocToken_ = function (token) {
   }
   jsdoc += ' }} data Data to map to template variables.';
 
-  jsdoc += '\n * @param {!Object.<string, function(string): string} ' +
+  jsdoc += '\n * @param {!Object.<string, function(string): string>} ' +
       '_helpers Helper functions.'
 
   jsdoc += '\n * @return {string} Template rendering.'
@@ -149,13 +151,14 @@ Compiler.prototype.compileCommandStart_ = function (command, exp) {
           'but got "' + exp_parts[2] + '"');
     }
     output = 'goog.array.forEach(' +
-        exp_parts[1].substr(1) + ', ' +
+        this.compileVariables_(exp_parts[2]) + ', ' +
         'function (' + exp_parts[0].substr(1) + ', index) {';
+    this.scopes_.unshift([ exp_parts[0].substr(1) ]);
     block_command = true;
     break;
 
   case 'if':
-    exp = exp.replace(/$([a-zA-Z]\w*)/g, 'data.$1');
+    exp = this.compileVariables_(exp);
     output = 'if (' + exp + ') {';
     block_command = true;
     break;
@@ -168,14 +171,18 @@ Compiler.prototype.compileCommandStart_ = function (command, exp) {
     break;
 
   case 'print':
-    exp = exp.replace(/$([a-zA-Z]\w*)/g, 'data.$1');
-    output = 'if (' + exp + ') {';
+    exp = this.compileVariables_(exp);
+    output = 'rendering += ' + exp + ';';
     break;
 
   case 'template':
     output = exp + ' = function (data, _helpers) { var rendering = "";';
     block_command = true;
-    this.provides_.push(exp);
+
+    var ns = exp.replace(/\.\w+$/, '');
+    if (this.provides_.indexOf(ns) === -1) {
+      this.provides_.push(ns);
+    }
     break;
   }
 
@@ -193,12 +200,13 @@ Compiler.prototype.compileCommandEnd_ = function (command) {
   switch (command) {
   case 'foreach':
     output = '});';
+    this.scopes_.shift();
     break;
   case 'if':
     output = '}';
     break;
   case 'template':
-    output = '};';
+    output = 'return rendering; };';
     break;
   default:
     throw new Error(
@@ -209,12 +217,29 @@ Compiler.prototype.compileCommandEnd_ = function (command) {
   return output;
 };
 
+
 Compiler.prototype.compileCodeToken = function (token) {
   if (this.open_commands_.length === 0 && /^\s*$/.test(token.source)) {
     return null;
   }
 
   return 'rendering += "' + token.source.replace(/"/g, '\\"') + '";';
+};
+
+
+Compiler.prototype.compileVariables_ = function (str) {
+  var scopes = this.scopes_;
+  str = str.replace(/\$([a-zA-Z]\w*)/g, function (match, name) {
+    for (var i = 0, ii = scopes.length; i < ii; ++i) {
+      var scope = scopes[i];
+      if (scope.indexOf(name) !== -1) {
+        return name;
+      }
+    }
+    return 'data.' + name;
+  });
+
+  return str;
 };
 
 
