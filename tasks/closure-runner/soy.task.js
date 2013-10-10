@@ -23,9 +23,9 @@ module.exports = function (runner, args, callback) {
       var js = compiler.compileTokens(tokens);
 
       fs.writeFileSync(target, js, 'utf8');
-      callback(null);
     } catch (err) {
-      callback(err);
+      return callback(err);
     }
+    callback(null);
   }, callback);
 };
