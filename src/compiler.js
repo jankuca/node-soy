@@ -150,8 +150,9 @@ Compiler.prototype.compileCommandStart_ = function (command, exp) {
           'Syntax Error: {foreach} command expecting a variable name ' +
           'but got "' + exp_parts[2] + '"');
     }
-    output = 'goog.array.forEach(' +
-        this.compileVariables_(exp_parts[2]) + ', ' +
+    var source_var = this.compileVariables_(exp_parts[2]);
+    output = 'if (' + source_var + ') { goog.array.forEach(' +
+        source_var + ', ' +
         'function (' + exp_parts[0].substr(1) + ', index) {';
     this.scopes_.unshift([ exp_parts[0].substr(1) ]);
     block_command = true;
@@ -199,7 +200,7 @@ Compiler.prototype.compileCommandEnd_ = function (command) {
 
   switch (command) {
   case 'foreach':
-    output = '});';
+    output = '}); }';
     this.scopes_.shift();
     break;
   case 'if':
