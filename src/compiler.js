@@ -8,9 +8,15 @@ var Compiler = function () {
 };
 
 
+Compiler.COMMON_TYPES = [
+  'string', 'number', 'boolean', 'function', 'undefined', 'null'
+];
+
+
 Compiler.prototype.compileTokens = function (tokens) {
   this.open_commands_ = [];
   this.provides_ = [];
+  this.requires_ = [];
   this.scopes_ = [];
 
   var code_chunks = tokens.map(function (token) {
@@ -53,11 +59,17 @@ Compiler.prototype.compileTokens = function (tokens) {
     return indentation + output + '\n';
   }, this);
 
+
   var result = '';
   if (this.provides_.length !== 0) {
-    result = this.provides_.map(function (symbol) {
+    result += this.provides_.map(function (symbol) {
       return 'goog.provide("' + symbol + '");';
     }).join('\n') + '\n\n';
+  }
+  if (this.requires_.length !== 0) {
+    result += this.requires_.map(function (symbol) {
+      return 'goog.require("' + symbol + '");';
+    }).join('\n') + '\n';
   }
   result += 'goog.require("goog.array");\n\n';
   result += code_chunks.join('');
@@ -80,9 +92,19 @@ Compiler.prototype.compileJSDocToken_ = function (token) {
   jsdoc += '\n * @param {{ '
   var template_annotations = template_jsdoc.annotations;
   if (template_annotations['params']) {
+    var requires = this.requires_;
     jsdoc += template_annotations['params'].map(function (param) {
-      return param.name + ': ' + param.type.substr(1, param.type.length - 2);
-    }).join(', ');
+      var composite_type = param.type.substr(1, param.type.length - 2);
+
+      var base_types = this.parseCompositeType_(composite_type);
+      base_types.forEach(function (type) {
+        if (requires.indexOf(type) === -1) {
+          requires.push(type);
+        }
+      });
+
+      return param.name + ': ' + composite_type;
+    }, this).join(', ');
   }
   jsdoc += ' }} data Data to map to template variables.';
 
@@ -241,6 +263,71 @@ Compiler.prototype.compileVariables_ = function (str) {
   });
 
   return str;
+};
+
+
+Compiler.prototype.parseCompositeType_ = function (composite) {
+  var types = [];
+
+  var i = 0;
+  var len = composite.length;
+  var type = '';
+
+  while (i < len) {
+    var ch = composite[i++];
+    var chc = ch.charCodeAt(0);
+
+    var alphanumeric = (
+        chc >= 48 && chc <= 57 ||
+        chc >= 65 && chc <= 90 ||
+        chc >= 97 && chc <= 122);
+    var chaining = (ch === '_' || ch === '.');
+    var special = (
+        ch === '!' || ch === '<' || ch === '>' || ch === ',' || ch === '|');
+    var white = /\s/.test(ch);
+
+    if (alphanumeric || chaining) {
+      type += ch;
+    } else if (special || white) {
+      if (type) {
+        type = type.replace(/\.$/, '');
+        types.push(type);
+        type = '';
+      }
+    } else {
+      throw new Error('Invalid character in composite type "' + ch + '"');
+    }
+  }
+
+  if (type) {
+    type = type.replace(/\.$/, '');
+    types.push(type);
+  }
+
+  types = this.stripCommonTypes_(types);
+
+  return types;
+};
+
+
+Compiler.prototype.stripCommonTypes_ = function (types) {
+  return types.filter(function (type) {
+    var primitive = (Compiler.COMMON_TYPES.indexOf(type) !== -1);
+    if (primitive) {
+      return false;
+    }
+
+    var Type = global;
+    var levels = type.split('.');
+    for (var l = 0, ll = levels.length; l < ll; ++l) {
+      Type = Type[levels[l]];
+      if (!Type) {
+        return true;
+      }
+    }
+
+    return (typeof Type !== 'function');
+  });
 };
 
 
