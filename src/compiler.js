@@ -89,9 +89,10 @@ Compiler.prototype.compileJSDocToken_ = function (token) {
     jsdoc += '\n * ' + template_jsdoc.description.replace(/\n/g, '\n * ');
   }
 
-  jsdoc += '\n * @param {{ '
+  jsdoc += '\n * @param {'
   var template_annotations = template_jsdoc.annotations;
   if (template_annotations['params']) {
+    jsdoc += '{ ';
     var requires = this.requires_;
     jsdoc += template_annotations['params'].map(function (param) {
       var composite_type = param.type.substr(1, param.type.length - 2);
@@ -105,8 +106,11 @@ Compiler.prototype.compileJSDocToken_ = function (token) {
 
       return param.name + ': ' + composite_type;
     }, this).join(', ');
+    jsdoc += ' }';
+  } else {
+    jsdoc += '!Object';
   }
-  jsdoc += ' }} data Data to map to template variables.';
+  jsdoc += '} data Data to map to template variables.';
 
   jsdoc += '\n * @param {!Object.<string, function(string): string>} ' +
       '_helpers Helper functions.'
