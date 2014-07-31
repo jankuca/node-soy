@@ -3,6 +3,7 @@ var JSDocParser = require('jsdoc-parser');
 
 var Compiler = function () {
   this.open_commands_ = null;
+  this.pending_jsdoc_params_ = null;
   this.provides_ = null;
   this.scopes_ = null;
 };
@@ -91,10 +92,11 @@ Compiler.prototype.compileJSDocToken_ = function (token) {
 
   jsdoc += '\n * @param {'
   var template_annotations = template_jsdoc.annotations;
-  if (template_annotations['params']) {
+  var template_params = template_annotations['params'];
+  if (template_params) {
     jsdoc += '{ ';
     var requires = this.requires_;
-    jsdoc += template_annotations['params'].map(function (param) {
+    jsdoc += template_params.map(function (param) {
       var composite_type = param.type.substr(1, param.type.length - 2);
 
       var base_types = this.parseCompositeType_(composite_type);
@@ -107,6 +109,10 @@ Compiler.prototype.compileJSDocToken_ = function (token) {
       return param.name + ': ' + composite_type;
     }, this).join(', ');
     jsdoc += ' }';
+
+    this.pending_jsdoc_params_ = template_params.map(function (param) {
+      return param.name;
+    });
   } else {
     jsdoc += '!Object';
   }
@@ -206,6 +212,10 @@ Compiler.prototype.compileCommandStart_ = function (command, exp) {
     output = exp + ' = function (data, _helpers) { var rendering = "";';
     block_command = true;
 
+    if (this.pending_jsdoc_params_) {
+      this.scopes_.unshift(this.pending_jsdoc_params_);
+    }
+
     var ns = exp.replace(/\.\w+$/, '');
     if (this.provides_.indexOf(ns) === -1) {
       this.provides_.push(ns);
@@ -216,6 +226,7 @@ Compiler.prototype.compileCommandStart_ = function (command, exp) {
   if (block_command) {
     this.open_commands_.unshift(command);
   }
+  this.pending_jsdoc_params_ = null;
 
   return output;
 };
@@ -234,6 +245,7 @@ Compiler.prototype.compileCommandEnd_ = function (command) {
     break;
   case 'template':
     output = 'return rendering; };';
+    this.scopes_.shift();
     break;
   default:
     throw new Error(
